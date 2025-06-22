@@ -35,39 +35,108 @@ export const usePosts = () => {
 
   const fetchPosts = async () => {
     try {
-      const { data, error } = await supabase
+      // First get posts with basic info
+      const { data: postsData, error: postsError } = await supabase
         .from('posts')
-        .select(`
-          id,
-          user_id,
-          caption,
-          image_url,
-          created_at,
-          profiles!posts_user_id_fkey (
-            username,
-            avatar_url
-          ),
-          likes (user_id),
-          comments (
-            id,
-            content,
-            created_at,
-            profiles!comments_user_id_fkey (username)
-          )
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (postsError) throw postsError;
 
-      const postsWithCounts = data?.map(post => ({
-        ...post,
-        _count: {
-          likes: post.likes?.length || 0,
-          comments: post.comments?.length || 0
+      if (!postsData) {
+        setPosts([]);
+        return;
+      }
+
+      // Get all unique user IDs from posts
+      const userIds = [...new Set(postsData.map(post => post.user_id))];
+
+      // Fetch profiles for all users
+      const { data: profilesData, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, username, avatar_url')
+        .in('id', userIds);
+
+      if (profilesError) throw profilesError;
+
+      // Fetch likes for all posts
+      const { data: likesData, error: likesError } = await supabase
+        .from('likes')
+        .select('post_id, user_id')
+        .in('post_id', postsData.map(post => post.id));
+
+      if (likesError) throw likesError;
+
+      // Fetch comments with profiles for all posts
+      const { data: commentsData, error: commentsError } = await supabase
+        .from('comments')
+        .select(`
+          id,
+          content,
+          created_at,
+          post_id,
+          user_id
+        `)
+        .in('post_id', postsData.map(post => post.id))
+        .order('created_at', { ascending: true });
+
+      if (commentsError) throw commentsError;
+
+      // Get profiles for comment authors
+      const commentUserIds = [...new Set(commentsData?.map(comment => comment.user_id) || [])];
+      const { data: commentProfilesData } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .in('id', commentUserIds);
+
+      // Create lookup maps
+      const profilesMap = new Map(profilesData?.map(profile => [profile.id, profile]) || []);
+      const likesMap = new Map<string, any[]>();
+      const commentsMap = new Map<string, any[]>();
+      const commentProfilesMap = new Map(commentProfilesData?.map(profile => [profile.id, profile]) || []);
+
+      // Group likes by post_id
+      likesData?.forEach(like => {
+        if (!likesMap.has(like.post_id)) {
+          likesMap.set(like.post_id, []);
         }
-      })) || [];
+        likesMap.get(like.post_id)?.push(like);
+      });
 
-      setPosts(postsWithCounts);
+      // Group comments by post_id and add profile info
+      commentsData?.forEach(comment => {
+        if (!commentsMap.has(comment.post_id)) {
+          commentsMap.set(comment.post_id, []);
+        }
+        const commentWithProfile = {
+          ...comment,
+          profiles: commentProfilesMap.get(comment.user_id) || { username: 'Unknown' }
+        };
+        commentsMap.get(comment.post_id)?.push(commentWithProfile);
+      });
+
+      // Combine all data
+      const postsWithData = postsData.map(post => {
+        const profile = profilesMap.get(post.user_id);
+        const likes = likesMap.get(post.id) || [];
+        const comments = commentsMap.get(post.id) || [];
+
+        return {
+          ...post,
+          profiles: {
+            username: profile?.username || 'Unknown',
+            avatar_url: profile?.avatar_url || null
+          },
+          likes,
+          comments,
+          _count: {
+            likes: likes.length,
+            comments: comments.length
+          }
+        };
+      });
+
+      setPosts(postsWithData);
     } catch (error) {
       console.error('Error fetching posts:', error);
     } finally {
