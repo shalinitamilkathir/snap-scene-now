@@ -43,7 +43,7 @@ export const usePosts = () => {
           caption,
           image_url,
           created_at,
-          profiles:user_id (
+          profiles!posts_user_id_fkey (
             username,
             avatar_url
           ),
@@ -52,7 +52,7 @@ export const usePosts = () => {
             id,
             content,
             created_at,
-            profiles:user_id (username)
+            profiles!comments_user_id_fkey (username)
           )
         `)
         .order('created_at', { ascending: false });
